@@ -897,7 +897,12 @@ class EfficientTAMObjectTracker(EfficientTAMBase):
 
         return mask_inputs
 
-    def get_point_inputs(self, box: Optional[np.ndarray] = None, points: Optional[np.ndarray] = None) -> Dict:
+    def get_point_inputs(
+            self,
+            box: Optional[np.ndarray] = None,
+            points: Optional[np.ndarray] = None,
+            input_labels: Optional[np.ndarray] = None,
+        ) -> Dict:
         """
         Prepare point inputs and their labels for the model, based on provided boxes or points.
 
@@ -911,6 +916,11 @@ class EfficientTAMObjectTracker(EfficientTAMBase):
         points : np.ndarray, optional
             An array of point coordinates of shape (k, 2) or (n, k, 2), where `k` is the
             number of points per instance. Used if `box` is not provided.
+
+        input_labels: np.ndarray, optional
+            An array of labels of shape (k) or (n, k), where the k-th element is
+            the label of the k-th point. `1` is positive click, `0` is a negative click
+            and `-1` is a padding click.
 
         Returns
         -------
@@ -929,9 +939,17 @@ class EfficientTAMObjectTracker(EfficientTAMBase):
                 # Single box (2, 2)
                 box = box[None]  # Add batch dimension -> (1, 2, 2)
 
-            # Create point and label tensors for boxes
+            # Create point tensor for boxes
             point = box  # Assuming the box contains point coordinates
-            label = torch.tensor([2, 3], device=self.device, dtype=torch.int32).unsqueeze(0).repeat(box.shape[0], 1)
+
+            # Default box labels are [2, 3] (representing top-left and bottom-right corners)
+            if input_labels is None:
+                label = torch.tensor([2, 3], device=self.device, dtype=torch.int32).unsqueeze(0).repeat(box.shape[0], 1)
+            else:
+                label = torch.from_numpy(input_labels)
+                if label.dim() == 1:
+                    label = label.unsqueeze(0)  # Add batch dimension
+                label = label.to(device=self.device, dtype=torch.int32)
 
         else:
             point = torch.from_numpy(points)
@@ -940,7 +958,15 @@ class EfficientTAMObjectTracker(EfficientTAMBase):
                 # Single point (k, 2)
                 point = point[None]  # Add batch dimension -> (1, k, 2)
 
-            label = torch.tensor([1], device=self.device, dtype=torch.int32).unsqueeze(0).repeat(points.shape[0], 1)
+            # Process point labels
+            if input_labels is not None:
+                label = torch.from_numpy(input_labels)
+                if label.dim() == 1:
+                    label = label.unsqueeze(0)  # Add batch dimension
+                label = label.to(device=self.device, dtype=torch.int32)
+            else:
+                # Default: all points are positive (label 1)
+                label = torch.ones((point.shape[0], point.shape[1]), device=self.device, dtype=torch.int32)
 
         point = point.to(device=self.device, dtype=torch.float32, non_blocking=True)
 
@@ -961,12 +987,14 @@ class EfficientTAMObjectTracker(EfficientTAMBase):
 
 
     @torch.inference_mode()
-    def track_new_object(self,
-                         img: Union[np.ndarray, torch.Tensor],
-                         points: Optional[np.ndarray] = None,
-                         box: Optional[np.ndarray] = None,
-                         mask: Optional[np.ndarray] = None
-                         ) -> Dict:
+    def track_new_object(
+        self,
+        img: Union[np.ndarray, torch.Tensor],
+        points: Optional[np.ndarray] = None,
+        box: Optional[np.ndarray] = None,
+        mask: Optional[np.ndarray] = None,
+        labels: Optional[np.ndarray] = None
+    ) -> Dict:
 
         """
         Track a new object in a given image based on input image, points, boxes, or masks.
@@ -985,6 +1013,21 @@ class EfficientTAMObjectTracker(EfficientTAMBase):
 
         mask : np.ndarray, optional
             Array of masks, shape (n, height, width).
+
+        labels: np.ndarray, optional
+            Array of labels with shape (n), where each entry of the array
+            can be `1`, `0`, or `-1`. `1` means positive click and
+            `0` means negative click
+
+            For example, points can be:
+
+            ```python
+            points = np.array([[200, 300], [275, 175]], dtype=np.float32)
+            labels = np.array([1, 0], dtype=np.int32)
+            ```
+
+            The first point [200, 300] is positive (should be included),
+            and the second [275, 175] is negative (should be excluded).
 
         Returns
         -------
@@ -1017,7 +1060,7 @@ class EfficientTAMObjectTracker(EfficientTAMBase):
             num_new_objects += box.shape[0] if box is not None else points.shape[0]
 
             mask_inputs = None
-            point_inputs = self.get_point_inputs(box=box, points=points)
+            point_inputs = self.get_point_inputs(box=box, points=points, input_labels=labels)
             normalization = torch.tensor([img_width, img_height], device=self.device)
             point_inputs['point_coords'] = point_inputs['point_coords'] / normalization
 
