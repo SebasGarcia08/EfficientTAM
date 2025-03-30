@@ -118,13 +118,37 @@ model:
   use_mlp_for_obj_ptr_proj: true
   # Compilation flag
   compile_image_encoder: true
-  # SAMURAI
+  # SAMURAI (Stable, Accurate Multi-object UndeRstanding And Integration) parameters
+  
+  # Enables the SAMURAI tracking algorithm which uses Kalman filters for stable object tracking
   samurai_mode: true
+  
+  # Number of consecutive frames an object needs to be tracked successfully to be considered "stable"
+  # Higher values (like 120) require ~4 seconds at 30fps before fully trusting the Kalman filter predictions
   stable_frames_threshold: 15
+  
+  # Minimum IoU (Intersection over Union) required to consider an object as being tracked stably
+  # If IoU falls below this threshold, stability counter resets
   stable_ious_threshold: 0.3
+  
+  # Threshold for object detection confidence scores (in logits space)
+  # Used to filter out low-confidence detections
   min_obj_score_logits: -1
+  
+  # Weight given to Kalman filter predictions when combining with raw detections
+  # Higher values (0.25) make tracking smoother but potentially less responsive to sudden changes
+  # weighted_ious = kf_score_weight * kf_ious + (1 - kf_score_weight) * ious
   kf_score_weight: 0.25
+  
+  # IoU threshold for storing frames in memory bank
+  # Only frames with IoU scores above this threshold are saved as reference
   memory_bank_iou_threshold: 0.5
+  
+  # Object score threshold for memory bank storage
+  # Filters memory bank entries based on object confidence
   memory_bank_obj_score_threshold: 0.0
+  
+  # Kalman filter score threshold for memory bank storage
+  # Ensures only frames with reliable Kalman filter predictions are stored
   memory_bank_kf_score_threshold: 0.0
 
