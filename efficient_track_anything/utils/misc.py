@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
+from scipy import ndimage
 
 
 def get_sdpa_settings():
@@ -44,9 +45,10 @@ def get_sdpa_settings():
     return old_gpu, use_flash_attn, math_kernel_on
 
 
-def get_connected_components(mask):
+def get_connected_components_cpu(mask):
     """
-    Get the connected components (8-connectivity) of binary masks of shape (N, 1, H, W).
+    CPU implementation of get_connected_components using scipy.ndimage.
+    Has the same signature and returns as the CUDA version.
 
     Inputs:
     - mask: A binary mask tensor of shape (N, 1, H, W), where 1 is foreground and 0 is
@@ -58,9 +60,70 @@ def get_connected_components(mask):
     - counts: A tensor of shape (N, 1, H, W) containing the area of the connected
               components for foreground pixels and 0 for background pixels.
     """
-    from efficient_track_anything import _C
+    # Convert tensor to numpy for processing
+    device = mask.device
+    mask_np = mask.detach().cpu().numpy()
+    N, C, H, W = mask_np.shape
 
-    return _C.get_connected_componnets(mask.to(torch.uint8).contiguous())
+    # Initialize output arrays
+    labels_np = np.zeros_like(mask_np, dtype=np.int32)
+    counts_np = np.zeros_like(mask_np, dtype=np.int32)
+
+    # Process each mask in the batch
+    for n in range(N):
+        # Use 8-connectivity for consistency with CUDA implementation
+        structure = ndimage.generate_binary_structure(2, 2)  # 8-connectivity
+        labeled, num_features = ndimage.label(mask_np[n, 0], structure=structure)
+
+        # Create count map (same size as input)
+        component_sizes = np.zeros(num_features + 1, dtype=np.int32)
+
+        if num_features > 0:
+            # Count pixels in each component (index 0 is background)
+            for i in range(1, num_features + 1):
+                component_sizes[i] = np.sum(labeled == i)
+
+            # Map component sizes to the labeled image
+            size_map = component_sizes[labeled]
+        else:
+            size_map = np.zeros_like(labeled)
+
+        # Store results
+        labels_np[n, 0] = labeled
+        counts_np[n, 0] = size_map
+
+    # Convert back to tensors
+    labels = torch.from_numpy(labels_np).to(device)
+    counts = torch.from_numpy(counts_np).to(device)
+
+    return labels, counts
+
+
+def get_connected_components(mask):
+    """
+    Get the connected components (8-connectivity) of binary masks of shape (N, 1, H, W).
+
+    Tries to use the CUDA implementation first, falls back to CPU if not available.
+
+    Inputs:
+    - mask: A binary mask tensor of shape (N, 1, H, W), where 1 is foreground and 0 is
+            background.
+
+    Outputs:
+    - labels: A tensor of shape (N, 1, H, W) containing the connected component labels
+              for foreground pixels and 0 for background pixels.
+    - counts: A tensor of shape (N, 1, H, W) containing the area of the connected
+              components for foreground pixels and 0 for background pixels.
+    """
+    try:
+        from efficient_track_anything import _C
+        return _C.get_connected_componnets(mask.to(torch.uint8).contiguous())
+    except (ImportError, AttributeError) as e:
+        warnings.warn(
+            f"CUDA connected components not available: {e}\n"
+            "Falling back to CPU implementation. This will be slower."
+        )
+        return get_connected_components_cpu(mask)
 
 
 def mask_to_box(masks: torch.Tensor):

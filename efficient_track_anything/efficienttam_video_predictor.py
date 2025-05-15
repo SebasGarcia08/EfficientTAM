@@ -7,6 +7,8 @@
 import warnings
 from collections import OrderedDict
 
+import numpy as np
+import cv2
 import torch
 import torch.nn.functional as F
 
@@ -45,23 +47,100 @@ class EfficientTAMVideoPredictor(EfficientTAMBase):
         self.clear_non_cond_mem_around_input = clear_non_cond_mem_around_input
         self.add_all_frames_to_correct_as_cond = add_all_frames_to_correct_as_cond
 
+    def perpare_data(
+        self,
+        imgs: list[np.ndarray],
+        compute_device: torch.device,
+        image_size=1024,
+        img_mean=(0.485, 0.456, 0.406),
+        img_std=(0.229, 0.224, 0.225),
+    ) -> tuple[torch.Tensor, int, int]:
+        """
+        Process a batch of images for model input.
+
+        Parameters
+        ----------
+        imgs : list or np.ndarray
+            Either a single numpy image of shape (H, W, 3) or a list of numpy images
+        compute_device : torch.device
+            Device to place tensors on (CPU or CUDA)
+        image_size : int
+            Target size for resizing images
+        img_mean : tuple
+            Mean values for normalization
+        img_std : tuple
+            Standard deviation values for normalization
+
+        Returns
+        -------
+        torch.Tensor
+            Batch of processed images of shape (B, 3, image_size, image_size) on specified device
+        int
+            Original image height
+        int
+            Original image width
+        """
+        # Handle single image case
+        if isinstance(imgs, np.ndarray) and len(imgs.shape) == 3:
+            imgs = [imgs]
+
+        batch_size = len(imgs)
+
+        # Pre-allocate batch tensor (on CPU initially for faster numpy transfers)
+        batch_tensor = torch.zeros((batch_size, 3, image_size, image_size), dtype=torch.float32)
+
+        # Get dimensions from the first image (assuming all images have same dimensions)
+        height, width = imgs[0].shape[:2]
+
+        # Process each image
+        for i, img in enumerate(imgs):
+            # Resize and normalize
+            img_np = cv2.resize(img, (image_size, image_size)) / 255.0
+
+            # Convert to tensor
+            img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).float()
+
+            # Add to batch
+            batch_tensor[i] = img_tensor
+
+        # Move tensors to the specified device
+        batch_tensor = batch_tensor.to(compute_device, non_blocking=True)
+        img_mean = torch.tensor(img_mean, dtype=torch.float32, device=compute_device)[:, None, None]
+        img_std = torch.tensor(img_std, dtype=torch.float32, device=compute_device)[:, None, None]
+
+        # Apply normalization on the device
+        batch_tensor -= img_mean
+        batch_tensor /= img_std
+
+        return batch_tensor, height, width
+
     @torch.inference_mode()
     def init_state(
         self,
-        video_path,
+        video_path: str | None = None,
         offload_video_to_cpu=False,
         offload_state_to_cpu=False,
         async_loading_frames=False,
+        imgs: list[np.ndarray] | None = None,
     ):
         """Initialize an inference state."""
         compute_device = self.device  # device of the model
-        images, video_height, video_width = load_video_frames(
-            video_path=video_path,
-            image_size=self.image_size,
-            offload_video_to_cpu=offload_video_to_cpu,
-            async_loading_frames=async_loading_frames,
-            compute_device=compute_device,
-        )
+
+        if video_path is None and imgs is None:
+            raise ValueError("No input provided (either video path or images)")
+
+        if imgs is not None:
+            images, video_height, video_width = self.perpare_data(
+                imgs, compute_device, self.image_size,
+			)
+        else:
+            images, video_height, video_width = load_video_frames(
+                video_path=video_path,
+                image_size=self.image_size,
+                offload_video_to_cpu=offload_video_to_cpu,
+                async_loading_frames=async_loading_frames,
+                compute_device=compute_device,
+            )
         inference_state = {}
         inference_state["images"] = images
         inference_state["num_frames"] = len(images)
