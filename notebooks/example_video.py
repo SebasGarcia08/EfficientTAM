@@ -10,6 +10,9 @@ import torch
 from efficient_track_anything.build_efficienttam import (
     build_efficienttam_video_predictor,
 )
+from efficient_track_anything.efficienttam_video_predictor import (
+    EfficientTAMVideoPredictor
+)
 from PIL import Image
 
 np.random.seed(5)
@@ -47,7 +50,7 @@ if device.type == "cuda":
 checkpoint = "../checkpoints/efficienttam_s.pt"
 model_cfg = "configs/efficienttam/efficienttam_s.yaml"
 
-predictor = build_efficienttam_video_predictor(model_cfg, checkpoint, device=device)
+predictor: EfficientTAMVideoPredictor = build_efficienttam_video_predictor(model_cfg, checkpoint, device=device)
 
 
 def show_mask(mask, ax, obj_id=None, random_color=False):
